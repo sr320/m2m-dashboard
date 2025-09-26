@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Download, Bell, MapPin, Activity, Clock, RefreshCw, Satellite } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Area, AreaChart } from "recharts";
 
-type ParamKey = "temp" | "sal" | "ph" | "do" | "turb" | "chl";
+type ParamKey = "temp" | "sal" | "ph" | "do" | "turb" | "chl" | "stress_bio" | "heat_hypoxia";
 
 type Reading = {
   ts: number;
@@ -19,6 +19,8 @@ type Reading = {
   do: number;
   turb: number;
   chl: number;
+  stress_bio: number;
+  heat_hypoxia: number;
 };
 
 type Site = {
@@ -44,6 +46,8 @@ const THRESHOLDS: Record<ParamKey, { warn: number; crit: number; dir: "over" | "
     do:   { warn: 6.0, crit: 4.0, dir: "under" },
     turb: { warn: 50, crit: 150, dir: "over" },
     chl:  { warn: 15, crit: 40, dir: "over" },
+    stress_bio: { warn: 60, crit: 80, dir: "over" },
+    heat_hypoxia: { warn: 60, crit: 80, dir: "over" },
   };
 
 const fmttime = (t: number) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -66,32 +70,90 @@ function randomWalk(prev: number, step: number, min: number, max: number) {
   return Math.max(min, Math.min(max, next));
 }
 
+// Calculate Stress Biology Index based on multiple environmental factors
+// Higher values indicate more stress (0-100 scale)
+function calculateStressBioIndex(temp: number, ph: number, doValue: number, turb: number): number {
+  let stress = 0;
+  
+  // Temperature stress (optimal around 15-18°C for many shellfish)
+  const tempOptimal = 16.5;
+  const tempStress = Math.abs(temp - tempOptimal) / tempOptimal * 30;
+  stress += Math.min(tempStress, 30);
+  
+  // pH stress (optimal around 8.0-8.2)
+  const phOptimal = 8.1;
+  const phStress = Math.abs(ph - phOptimal) / 0.5 * 25;
+  stress += Math.min(phStress, 25);
+  
+  // DO stress (below 6 mg/L is stressful)
+  const doStress = doValue < 6 ? (6 - doValue) / 6 * 30 : 0;
+  stress += Math.min(doStress, 30);
+  
+  // Turbidity stress (above 20 NTU increases stress)
+  const turbStress = turb > 20 ? (turb - 20) / 50 * 15 : 0;
+  stress += Math.min(turbStress, 15);
+  
+  return Math.min(Math.max(stress, 0), 100);
+}
+
+// Calculate Heat Hypoxia Risk Factor 
+// Combines temperature and dissolved oxygen to assess hypoxic stress risk
+function calculateHeatHypoxiaRisk(temp: number, doValue: number): number {
+  // Risk increases with higher temperature and lower DO
+  const tempRisk = temp > 18 ? (temp - 18) / 8 * 50 : 0; // Risk starts above 18°C
+  const doRisk = doValue < 8 ? (8 - doValue) / 8 * 50 : 0; // Risk when DO below 8 mg/L
+  
+  // Combined risk with interaction effect (high temp + low DO is worse than sum)
+  const combinedRisk = tempRisk + doRisk;
+  const interactionBonus = (tempRisk > 25 && doRisk > 25) ? 20 : 0;
+  
+  return Math.min(Math.max(combinedRisk + interactionBonus, 0), 100);
+}
+
 function generateSeeded(start: number): Reading {
+  const temp = 16 + Math.random() * 4;
+  const sal = 28 + Math.random() * 3;
+  const ph = 7.8 + Math.random() * 0.2;
+  const doValue = 7 + Math.random() * 2;
+  const turb = 10 + Math.random() * 25;
+  const chl = 3 + Math.random() * 10;
+  
   return {
     ts: start,
-    temp: 16 + Math.random() * 4,
-    sal:  28 + Math.random() * 3,
-    ph:   7.8 + Math.random() * 0.2,
-    do:   7 + Math.random() * 2,
-    turb: 10 + Math.random() * 25,
-    chl:  3 + Math.random() * 10,
+    temp,
+    sal,
+    ph,
+    do: doValue,
+    turb,
+    chl,
+    stress_bio: calculateStressBioIndex(temp, ph, doValue, turb),
+    heat_hypoxia: calculateHeatHypoxiaRisk(temp, doValue),
   };
 }
 
 function tick(prev: Reading, ts: number): Reading {
+  const temp = randomWalk(prev.temp, 0.3, 8, 26);
+  const sal = randomWalk(prev.sal, 0.3, 10, 33);
+  const ph = randomWalk(prev.ph, 0.05, 7.3, 8.3);
+  const doValue = randomWalk(prev.do, 0.4, 1.5, 12);
+  const turb = randomWalk(prev.turb, 6, 1, 300);
+  const chl = randomWalk(prev.chl, 3, 0.1, 120);
+  
   return {
     ts,
-    temp: randomWalk(prev.temp, 0.3, 8, 26),
-    sal:  randomWalk(prev.sal, 0.3, 10, 33),
-    ph:   randomWalk(prev.ph, 0.05, 7.3, 8.3),
-    do:   randomWalk(prev.do, 0.4, 1.5, 12),
-    turb: randomWalk(prev.turb, 6, 1, 300),
-    chl:  randomWalk(prev.chl, 3, 0.1, 120),
+    temp,
+    sal,
+    ph,
+    do: doValue,
+    turb,
+    chl,
+    stress_bio: calculateStressBioIndex(temp, ph, doValue, turb),
+    heat_hypoxia: calculateHeatHypoxiaRisk(temp, doValue),
   };
 }
 
 function toCSV(rows: Reading[]): string {
-  const header = ["timestamp", "time_local", "temp_c", "sal_psu", "ph", "do_mgL", "turb_ntu", "chl_ugL"].join(",");
+  const header = ["timestamp", "time_local", "temp_c", "sal_psu", "ph", "do_mgL", "turb_ntu", "chl_ugL", "stress_bio_index", "heat_hypoxia_risk"].join(",");
   const lines = rows.map(r => [
     r.ts,
     new Date(r.ts).toISOString(),
@@ -101,6 +163,8 @@ function toCSV(rows: Reading[]): string {
     r.do.toFixed(2),
     r.turb.toFixed(1),
     r.chl.toFixed(1),
+    r.stress_bio.toFixed(1),
+    r.heat_hypoxia.toFixed(1),
   ].join(","));
   return [header, ...lines].join("\n");
 }
@@ -200,7 +264,7 @@ export default function App() {
 
   const alerts = useMemo(() => {
     if (!latest) return [] as { key: ParamKey; level: "warn"|"crit"; value: number }[];
-    const keys: ParamKey[] = ["temp","sal","ph","do","turb","chl"];
+    const keys: ParamKey[] = ["temp","sal","ph","do","turb","chl","stress_bio","heat_hypoxia"];
     return keys
       .map(k => ({ key: k, level: classifyAlert(k, (latest as any)[k] as number), value: (latest as any)[k] as number }))
       .filter(a => a.level !== "ok")
@@ -214,6 +278,8 @@ export default function App() {
     do: { label: "Dissolved O₂", unit: "mg/L" },
     turb: { label: "Turbidity", unit: "NTU" },
     chl: { label: "Chlorophyll‑a", unit: "µg/L" },
+    stress_bio: { label: "Stress Biology Index", unit: "" },
+    heat_hypoxia: { label: "Heat Hypoxia Risk", unit: "" },
   };
 
   function exportCSV() {
@@ -287,13 +353,15 @@ export default function App() {
                 <div className="ml-auto text-sm flex items-center gap-2"><Clock className="h-4 w-4"/> Last update: {latest? new Date(latest.ts).toLocaleTimeString():"—"}</div>
               </div>
               {latest && (
-                <div className="mt-4 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+                <div className="mt-4 grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3">
                   <MetricCard label="Temp" value={latest.temp} unit="°C" alert={classifyAlert("temp", latest.temp)} />
                   <MetricCard label="Salinity" value={latest.sal} unit="PSU" alert={classifyAlert("sal", latest.sal)} />
                   <MetricCard label="pH" value={latest.ph} unit="" alert={classifyAlert("ph", latest.ph)} />
                   <MetricCard label="DO" value={latest.do} unit="mg/L" alert={classifyAlert("do", latest.do)} />
                   <MetricCard label="Turbidity" value={latest.turb} unit="NTU" alert={classifyAlert("turb", latest.turb)} />
                   <MetricCard label="Chl‑a" value={latest.chl} unit="µg/L" alert={classifyAlert("chl", latest.chl)} />
+                  <MetricCard label="Stress Bio" value={latest.stress_bio} unit="" alert={classifyAlert("stress_bio", latest.stress_bio)} />
+                  <MetricCard label="Heat Hypoxia" value={latest.heat_hypoxia} unit="" alert={classifyAlert("heat_hypoxia", latest.heat_hypoxia)} />
                 </div>
               )}
             </CardContent>
@@ -316,6 +384,8 @@ export default function App() {
                       { value: "do", label: "Dissolved O₂" },
                       { value: "turb", label: "Turbidity" },
                       { value: "chl", label: "Chlorophyll‑a" },
+                      { value: "stress_bio", label: "Stress Biology Index" },
+                      { value: "heat_hypoxia", label: "Heat Hypoxia Risk" },
                     ]}
                     className="w-44"
                   />
@@ -333,8 +403,8 @@ export default function App() {
                 </ResponsiveContainer>
               </div>
 
-              <div className="mt-4 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
-                {(["temp","sal","ph","do","turb","chl"] as ParamKey[]).map(k => (
+              <div className="mt-4 grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3">
+                {(["temp","sal","ph","do","turb","chl","stress_bio","heat_hypoxia"] as ParamKey[]).map(k => (
                   <div key={k} className={`p-2 rounded-xl border ${showParam===k?"border-sky-300 bg-sky-50":"border-slate-200"}`}>
                     <div className="text-xs mb-1 flex items-center justify-between">
                       <span>{paramMeta[k].label}</span>
@@ -363,8 +433,8 @@ export default function App() {
               <Card className="rounded-2xl mt-3">
                 <CardContent className="p-4">
                   <div className="text-sm opacity-80 mb-3">Customize alert thresholds (mock; non‑persistent).</div>
-                  <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
-                    {(["temp","sal","ph","do","turb","chl"] as ParamKey[]).map(k => (
+                  <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3">
+                    {(["temp","sal","ph","do","turb","chl","stress_bio","heat_hypoxia"] as ParamKey[]).map(k => (
                       <div key={k} className="space-y-2 p-3 rounded-xl border">
                         <div className="text-sm font-medium">{paramMeta[k].label}</div>
                         <div className="grid grid-cols-2 gap-2 items-center">
@@ -395,7 +465,7 @@ export default function App() {
                 <CardContent className="p-4 space-y-2 text-sm">
                   <p>
                     This mockup simulates a real‑time data stream for coastal aquaculture sites
-                    (temperature, salinity, pH, dissolved oxygen, turbidity, chlorophyll‑a).
+                    (temperature, salinity, pH, dissolved oxygen, turbidity, chlorophyll‑a, stress biology index, heat hypoxia risk factor).
                     Replace the generator with your telemetry API or WebSocket.
                   </p>
                   <ul className="list-disc ml-5 space-y-1">
