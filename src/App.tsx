@@ -187,7 +187,7 @@ function MetricCard({ label, value, unit, alert }: { label: string; value: numbe
     <Card className={`rounded-2xl ${tone}`}>
       <CardContent className="p-4">
         <div className="text-sm opacity-80">{label}</div>
-        <div className="text-3xl font-semibold tabular-nums">{value.toFixed(2)} <span className="text-base align-top opacity-70">{unit}</span></div>
+        <div className="text-2xl font-semibold tabular-nums">{value.toFixed(2)} <span className="text-base align-top opacity-70">{unit}</span></div>
       </CardContent>
     </Card>
   );
